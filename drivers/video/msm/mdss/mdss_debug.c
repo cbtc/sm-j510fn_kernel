@@ -839,6 +839,91 @@ static int mdss_debugfs_cleanup(struct mdss_debug_data *mdd)
 	return 0;
 }
 
+static ssize_t mdss_debug_perf_bw_limit_read(struct file *file,
+			char __user *buff, size_t count, loff_t *ppos)
+{
+	struct mdss_data_type *mdata = file->private_data;
+	struct mdss_max_bw_settings *temp_settings;
+	int len = 0, i;
+	char buf[256];
+
+	if (!mdata)
+		return -ENODEV;
+
+	if (*ppos)
+		return 0;	/* the end */
+
+	pr_debug("mdata->max_bw_settings_cnt = %d\n",
+			mdata->max_bw_settings_cnt);
+
+	temp_settings = mdata->max_bw_settings;
+	for (i = 0; i < mdata->max_bw_settings_cnt; i++) {
+		len += snprintf(buf + len, sizeof(buf), "%d %d\n",
+				temp_settings->mdss_max_bw_mode,
+					temp_settings->mdss_max_bw_val);
+		temp_settings++;
+	}
+
+	if (len < 0)
+		return 0;
+
+	if (copy_to_user(buff, buf, len))
+		return -EFAULT;
+
+	*ppos += len;	/* increase offset */
+
+	return len;
+}
+
+static ssize_t mdss_debug_perf_bw_limit_write(struct file *file,
+		    const char __user *user_buf, size_t count, loff_t *ppos)
+{
+	struct mdss_data_type *mdata = file->private_data;
+	char buf[32];
+	u32 mode, val, cnt;
+	struct mdss_max_bw_settings *temp_settings;
+
+	if (!mdata)
+		return -ENODEV;
+
+
+	if (count >= sizeof(buf))
+		return -EFAULT;
+
+	if (copy_from_user(buf, user_buf, count))
+		return -EFAULT;
+
+	buf[count] = 0;	/* end of string */
+	cnt = mdata->max_bw_settings_cnt;
+	temp_settings = mdata->max_bw_settings;
+
+	if (strnchr(buf, count, ' ')) {
+		/* Parsing buf */
+		if (sscanf(buf, "%d %d", &mode, &val) != 2)
+			return -EFAULT;
+	}
+
+	while (cnt--) {
+		if (mode == temp_settings->mdss_max_bw_mode) {
+			temp_settings->mdss_max_bw_val = val;
+			break;
+		} else {
+			temp_settings++;
+		}
+	}
+
+	if (cnt == 0)
+		pr_err("Input mode is invalid\n");
+
+	return count;
+}
+
+static const struct file_operations mdss_perf_bw_limit_fops = {
+	.open = simple_open,
+	.read = mdss_debug_perf_bw_limit_read,
+	.write = mdss_debug_perf_bw_limit_write,
+};
+
 static int mdss_debugfs_perf_init(struct mdss_debug_data *mdd,
 			struct mdss_data_type *mdata) {
 
@@ -891,6 +976,9 @@ static int mdss_debugfs_perf_init(struct mdss_debug_data *mdd,
 	mdata->latency_buff_per = 0;
 	debugfs_create_u32("latency_buff_per", 0644, mdd->perf,
 		(u32 *)&mdata->latency_buff_per);
+
+	debugfs_create_file("threshold_bw_limit", 0644, mdd->perf,
+		(struct mdss_data_type *)mdata, &mdss_perf_bw_limit_fops);
 
 	return 0;
 }
@@ -966,7 +1054,7 @@ void mdss_dump_reg(char __iomem *base, int len)
 		x4 = readl_relaxed(addr+0x4);
 		x8 = readl_relaxed(addr+0x8);
 		xc = readl_relaxed(addr+0xc);
-		pr_info("%p : %08x %08x %08x %08x\n", addr, x0, x4, x8, xc);
+		pr_info("%pK : %08x %08x %08x %08x\n", addr, x0, x4, x8, xc);
 		addr += 16;
 	}
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
@@ -1086,7 +1174,7 @@ static inline struct mdss_mdp_misr_map *mdss_misr_get_map(u32 block_id,
 		return NULL;
 	}
 
-	pr_debug("MISR Module(%d) CTRL(0x%x) SIG(0x%x) intf_base(0x%p)\n",
+	pr_debug("MISR Module(%d) CTRL(0x%x) SIG(0x%x) intf_base(0x%pK)\n",
 			block_id, map->ctrl_reg, map->value_reg, intf_base);
 	return map;
 }
@@ -1129,7 +1217,7 @@ int mdss_misr_set(struct mdss_data_type *mdata,
 	bool use_mdp_up_misr = false;
 
 	if (!mdata || !req || !ctl) {
-		pr_err("Invalid input params: mdata = %p req = %p ctl = %p",
+		pr_err("Invalid input params: mdata = %pK req = %pK ctl = %pK",
 			mdata, req, ctl);
 		return -EINVAL;
 	}

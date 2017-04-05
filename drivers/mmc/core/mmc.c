@@ -87,6 +87,14 @@ static const struct mmc_fixup mmc_fixups[] = {
 	END_FIXUP
 };
 
+#ifdef CONFIG_ASYNC_FSYNC
+static unsigned int perf_degr;
+int emmc_perf_degr(void)
+{
+	return perf_degr;
+}
+#endif
+
 /*
  * Given the decoded CSD structure, decode the raw CID to our CID structure.
  */
@@ -1958,7 +1966,7 @@ static int mmc_suspend(struct mmc_host *host)
 	if (mmc_can_scale_clk(host))
 		mmc_disable_clk_scaling(host);
 
-	err = mmc_cache_ctrl(host, 0);
+	err = mmc_flush_cache(host->card);
 	if (err)
 		goto out;
 

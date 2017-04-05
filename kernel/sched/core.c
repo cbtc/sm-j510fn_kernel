@@ -886,10 +886,127 @@ static void set_load_weight(struct task_struct *p)
 	load->inv_weight = prio_to_wmult[prio];
 }
 
+#ifdef CONFIG_CAPACITY_CLAMPING
+
+static inline void
+cap_clamp_insert_capacity(struct rq *rq, struct task_struct *p,
+			  unsigned int cap_idx)
+{
+	struct cap_clamp_cpu *cgc = &rq->cap_clamp_cpu[cap_idx];
+	struct task_group *tg = task_group(p);
+	struct rb_node *parent = NULL;
+	struct task_struct *entry;
+	struct rb_node **link;
+	struct rb_root *root;
+	struct rb_node *node;
+	int update_cache = 1;
+	u64 capacity_new;
+	u64 capacity_cur;
+
+	node = &p->cap_clamp_node[cap_idx];
+	if (!RB_EMPTY_NODE(node)) {
+		WARN(1, "cap_clamp_insert_capacity() on non empty node\n");
+		return;
+	}
+
+	/*
+	 * The capacity_{min,max} the task is subject to is defined by the
+	 * current TG the task belongs to. The TG's capacity constraints are
+	 * thus used to place the task within the rbtree used to track
+	 * the capacity_{min,max} for the CPU.
+	 */
+	capacity_new = tg->cap_clamp[cap_idx];
+	root = &cgc->tree;
+	link = &root->rb_node;
+	while (*link) {
+		parent = *link;
+		entry = rb_entry(parent, struct task_struct,
+				 cap_clamp_node[cap_idx]);
+		capacity_cur = task_group(entry)->cap_clamp[cap_idx];
+		if (capacity_new <= capacity_cur) {
+			link = &parent->rb_left;
+			update_cache = 0;
+		} else {
+			link = &parent->rb_right;
+		}
+	}
+
+	/* Add task's capacity_{min,max} and rebalance the rbtree */
+	rb_link_node(node, parent, link);
+	rb_insert_color(node, root);
+
+	if (!update_cache)
+		return;
+
+	/* Update CPU's capacity cache pointer */
+	cgc->value = capacity_new;
+	cgc->node = node;
+}
+
+static inline void
+cap_clamp_remove_capacity(struct rq *rq, struct task_struct *p,
+			  unsigned int cap_idx)
+{
+	struct cap_clamp_cpu *cgc = &rq->cap_clamp_cpu[cap_idx];
+	struct rb_node *node = &p->cap_clamp_node[cap_idx];
+	struct rb_root *root = &cgc->tree;
+
+	if (RB_EMPTY_NODE(node)) {
+		WARN(1, "cap_clamp_remove_capacity on empty node\n");
+		return;
+	}
+
+	/* Update CPU's capacity_{min,max} cache pointer */
+	if (node == cgc->node) {
+		struct rb_node *prev_node = rb_prev(node);
+
+		/* Reset value in case this was the last task */
+		cgc->value = (cap_idx == CAP_CLAMP_MIN)
+			? 0 : SCHED_CAPACITY_SCALE;
+
+		/* Update node and value, if there is another task */
+		cgc->node = prev_node;
+		if (cgc->node) {
+			struct task_struct *entry;
+
+			entry = rb_entry(cgc->node, struct task_struct,
+					 cap_clamp_node[cap_idx]);
+			cgc->value = task_group(entry)->cap_clamp[cap_idx];
+		}
+	}
+
+	/* Remove task's capacity_{min,max] */
+	rb_erase(node, root);
+	RB_CLEAR_NODE(node);
+}
+
+static inline void
+cap_clamp_enqueue_task(struct rq *rq, struct task_struct *p, int flags)
+{
+	/* Track task's min/max capacities */
+	cap_clamp_insert_capacity(rq, p, CAP_CLAMP_MIN);
+	cap_clamp_insert_capacity(rq, p, CAP_CLAMP_MAX);
+}
+
+static inline void
+cap_clamp_dequeue_task(struct rq *rq, struct task_struct *p, int flags)
+{
+	/* Track task's min/max capacities */
+	cap_clamp_remove_capacity(rq, p, CAP_CLAMP_MIN);
+	cap_clamp_remove_capacity(rq, p, CAP_CLAMP_MAX);
+}
+#else
+static inline void
+cap_clamp_enqueue_task(struct rq *rq, struct task_struct *p, int flags) { }
+static inline void
+cap_clamp_dequeue_task(struct rq *rq, struct task_struct *p, int flags) { }
+#endif /* CONFIG_CAPACITY_CLAMPING */
+
 static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
 	sched_info_queued(p);
+	cap_clamp_enqueue_task(rq, p, flags);
 	p->sched_class->enqueue_task(rq, p, flags);
 	trace_sched_enq_deq_task(p, 1, cpumask_bits(&p->cpus_allowed)[0]);
 	inc_cumulative_runnable_avg(rq, p);
@@ -899,6 +1016,7 @@ static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
 	sched_info_dequeued(p);
+	cap_clamp_dequeue_task(rq, p, flags);
 	p->sched_class->dequeue_task(rq, p, flags);
 	trace_sched_enq_deq_task(p, 0, cpumask_bits(&p->cpus_allowed)[0]);
 	dec_cumulative_runnable_avg(rq, p);
@@ -2651,6 +2769,10 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 	WARN_ON_ONCE(debug_locks && !(lockdep_is_held(&p->pi_lock) ||
 				      lockdep_is_held(&task_rq(p)->lock)));
 #endif
+#endif
+#ifdef CONFIG_CAPACITY_CLAMPING
+	RB_CLEAR_NODE(&p->cap_clamp_node[CAP_CLAMP_MIN]);
+	RB_CLEAR_NODE(&p->cap_clamp_node[CAP_CLAMP_MAX]);
 #endif
 
 	trace_sched_migrate_task(p, new_cpu, pct_task_load(p));
@@ -7935,6 +8057,8 @@ static const struct cpumask *cpu_cpu_mask(int cpu)
 	return cpumask_of_node(cpu_to_node(cpu));
 }
 
+int sched_smt_power_savings = 0, sched_mc_power_savings = 4;
+
 struct sd_data {
 	struct sched_domain **__percpu sd;
 	struct sched_group **__percpu sg;
@@ -9188,6 +9312,11 @@ void __init sched_init(void)
 
 #endif /* CONFIG_CGROUP_SCHED */
 
+#ifdef CONFIG_CAPACITY_CLAMPING
+	root_task_group.cap_clamp[CAP_CLAMP_MIN] = 0;
+	root_task_group.cap_clamp[CAP_CLAMP_MAX] = SCHED_CAPACITY_SCALE;
+#endif /* CONFIG_CAPACITY_CLAMPING */
+
 	for_each_possible_cpu(i) {
 		struct rq *rq;
 
@@ -9224,6 +9353,13 @@ void __init sched_init(void)
 		init_cfs_bandwidth(&root_task_group.cfs_bandwidth);
 		init_tg_cfs_entry(&root_task_group, &rq->cfs, NULL, i, NULL);
 #endif /* CONFIG_FAIR_GROUP_SCHED */
+
+#ifdef CONFIG_CAPACITY_CLAMPING
+		rq->cap_clamp_cpu[CAP_CLAMP_MIN].tree = RB_ROOT;
+		rq->cap_clamp_cpu[CAP_CLAMP_MIN].node = NULL;
+		rq->cap_clamp_cpu[CAP_CLAMP_MAX].tree = RB_ROOT;
+		rq->cap_clamp_cpu[CAP_CLAMP_MAX].node = NULL;
+#endif
 
 		rq->rt.rt_runtime = def_rt_bandwidth.rt_runtime;
 #ifdef CONFIG_RT_GROUP_SCHED
@@ -9518,6 +9654,11 @@ struct task_group *sched_create_group(struct task_group *parent)
 
 	if (!alloc_rt_sched_group(tg, parent))
 		goto err;
+
+#ifdef CONFIG_CAPACITY_CLAMPING
+	tg->cap_clamp[CAP_CLAMP_MIN] = parent->cap_clamp[CAP_CLAMP_MIN];
+	tg->cap_clamp[CAP_CLAMP_MAX] = parent->cap_clamp[CAP_CLAMP_MAX];
+#endif
 
 	return tg;
 
@@ -10042,6 +10183,129 @@ static int cpu_notify_on_migrate_write_u64(struct cgroup *cgrp,
 	return 0;
 }
 
+#ifdef CONFIG_CAPACITY_CLAMPING
+
+static DEFINE_MUTEX(cap_clamp_mutex);
+
+static int cpu_capacity_min_write_u64(struct cgroup_subsys_state *css,
+				      struct cftype *cftype, u64 value)
+{
+	struct cgroup_subsys_state *pos;
+	unsigned int min_value;
+	struct task_group *tg;
+	int ret = -EINVAL;
+
+	min_value = min_t(unsigned int, value, SCHED_CAPACITY_SCALE);
+
+	mutex_lock(&cap_clamp_mutex);
+	rcu_read_lock();
+
+	tg = css_tg(css);
+
+	/* Already at the required value */
+	if (tg->cap_clamp[CAP_CLAMP_MIN] == min_value)
+		goto done;
+
+	/* Ensure to not exceed the maximum capacity */
+	if (tg->cap_clamp[CAP_CLAMP_MAX] < min_value)
+		goto out;
+
+	/* Ensure min cap fits within parent constraint */
+	if (tg->parent &&
+	    tg->parent->cap_clamp[CAP_CLAMP_MIN] > min_value)
+		goto out;
+
+	/* Each child must be a subset of us */
+	css_for_each_child(pos, css) {
+		if (css_tg(pos)->cap_clamp[CAP_CLAMP_MIN] < min_value)
+			goto out;
+	}
+
+	tg->cap_clamp[CAP_CLAMP_MIN] = min_value;
+
+done:
+	ret = 0;
+out:
+	rcu_read_unlock();
+	mutex_unlock(&cap_clamp_mutex);
+
+	return ret;
+}
+
+static int cpu_capacity_max_write_u64(struct cgroup_subsys_state *css,
+				      struct cftype *cftype, u64 value)
+{
+	struct cgroup_subsys_state *pos;
+	unsigned int max_value;
+	struct task_group *tg;
+	int ret = -EINVAL;
+
+	max_value = min_t(unsigned int, value, SCHED_CAPACITY_SCALE);
+
+	mutex_lock(&cap_clamp_mutex);
+	rcu_read_lock();
+
+	tg = css_tg(css);
+
+	/* Already at the required value */
+	if (tg->cap_clamp[CAP_CLAMP_MAX] == max_value)
+		goto done;
+
+	/* Ensure to not go below the minimum capacity */
+	if (tg->cap_clamp[CAP_CLAMP_MIN] > max_value)
+		goto out;
+
+	/* Ensure max cap fits within parent constraint */
+	if (tg->parent &&
+	    tg->parent->cap_clamp[CAP_CLAMP_MAX] < max_value)
+		goto out;
+
+	/* Each child must be a subset of us */
+	css_for_each_child(pos, css) {
+		if (css_tg(pos)->cap_clamp[CAP_CLAMP_MAX] > max_value)
+			goto out;
+	}
+
+	tg->cap_clamp[CAP_CLAMP_MAX] = max_value;
+
+done:
+	ret = 0;
+out:
+	rcu_read_unlock();
+	mutex_unlock(&cap_clamp_mutex);
+
+	return ret;
+}
+
+static u64 cpu_capacity_min_read_u64(struct cgroup_subsys_state *css,
+				     struct cftype *cft)
+{
+	struct task_group *tg;
+	u64 min_capacity;
+
+	rcu_read_lock();
+	tg = css_tg(css);
+	min_capacity = tg->cap_clamp[CAP_CLAMP_MIN];
+	rcu_read_unlock();
+
+	return min_capacity;
+}
+
+static u64 cpu_capacity_max_read_u64(struct cgroup_subsys_state *css,
+				     struct cftype *cft)
+{
+	struct task_group *tg;
+	u64 max_capacity;
+
+	rcu_read_lock();
+	tg = css_tg(css);
+	max_capacity = tg->cap_clamp[CAP_CLAMP_MAX];
+	rcu_read_unlock();
+
+	return max_capacity;
+}
+#endif /* CONFIG_CAPACITY_CLAMPING */
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 static int cpu_shares_write_u64(struct cgroup *cgrp, struct cftype *cftype,
 				u64 shareval)
@@ -10330,6 +10594,18 @@ static struct cftype cpu_files[] = {
 		.name = "shares",
 		.read_u64 = cpu_shares_read_u64,
 		.write_u64 = cpu_shares_write_u64,
+	},
+#endif
+#ifdef CONFIG_CAPACITY_CLAMPING
+	{
+		.name = "capacity_min",
+		.read_u64 = cpu_capacity_min_read_u64,
+		.write_u64 = cpu_capacity_min_write_u64,
+	},
+	{
+		.name = "capacity_max",
+		.read_u64 = cpu_capacity_max_read_u64,
+		.write_u64 = cpu_capacity_max_write_u64,
 	},
 #endif
 #ifdef CONFIG_CFS_BANDWIDTH

@@ -1,6 +1,6 @@
 VERSION = 3
 PATCHLEVEL = 10
-SUBLEVEL = 60
+SUBLEVEL = 95
 EXTRAVERSION =
 NAME = TOSSUG Baby Fish
 
@@ -197,7 +197,6 @@ export KBUILD_BUILDHOST := $(SUBARCH)
 ARCH		?=arm
 CROSS_COMPILE	?=$(CCACHE) ../linaro/arm-eabi-6.3.1/bin/arm-eabi-
 
-
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
 SRCARCH 	:= $(ARCH)
@@ -349,25 +348,25 @@ include $(srctree)/scripts/Kbuild.include
 
 # Make variables (CC, etc...)
 
-AS		        = $(CROSS_COMPILE)as
-LD		        = $(CROSS_COMPILE)ld.bfd
-CC		        = $(CCACHE) $(CROSS_COMPILE)gcc
-CPP		        = $(CC) -E
+AS		= $(CROSS_COMPILE)as
+LD		= $(CROSS_COMPILE)ld.bfd
+CC		= $(CCACHE) $(CROSS_COMPILE)gcc
+CPP		= $(CC) -E
 ifdef CONFIG_CC_GRAPHITE_OPTIMIZATION
-CC		       += $(GRAPHITE)
-CPP		       += $(GRAPHITE)
+CC		+= $(GRAPHITE)
+CPP		+= $(GRAPHITE)
 endif
-AR		        = $(CROSS_COMPILE)ar
-NM		        = $(CROSS_COMPILE)nm
-STRIP		    = $(CROSS_COMPILE)strip
-OBJCOPY		    = $(CROSS_COMPILE)objcopy
-OBJDUMP		    = $(CROSS_COMPILE)objdump
-AWK		        = awk
-GENKSYMS	    = scripts/genksyms/genksyms
+AR		= $(CROSS_COMPILE)ar
+NM		= $(CROSS_COMPILE)nm
+STRIP		= $(CROSS_COMPILE)strip
+OBJCOPY		= $(CROSS_COMPILE)objcopy
+OBJDUMP		= $(CROSS_COMPILE)objdump
+AWK		= awk
+GENKSYMS	= scripts/genksyms/genksyms
 INSTALLKERNEL  := installkernel
-DEPMOD		    = /sbin/depmod
-PERL		    = perl
-CHECK		    = sparse
+DEPMOD		= /sbin/depmod
+PERL		= perl
+CHECK		= sparse
 
 # Use the wrapper for the compiler.  This wrapper scans for new
 # warnings and causes the build to stop upon encountering them.
@@ -383,7 +382,7 @@ ifdef CONFIG_CC_GRAPHITE_OPTIMIZATION
 CFLAGS_KERNEL	= $(GRAPHITE)
 endif
 AFLAGS_KERNEL	=
-CFLAGS_GCOV	    = -fprofile-arcs -ftest-coverage
+CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 
 
 # Use USERINCLUDE when you must reference the UAPI directories only.
@@ -406,14 +405,14 @@ LINUXINCLUDE    := \
 
 KBUILD_CPPFLAGS := -D__KERNEL__
 
-CFLAGS_A53       = -mtune=cortex-a53 -mfpu=neon-vfpv4 -march=armv8-a
+CFLAGS_A53       = -mtune=cortex-a53 -mfpu=neon-vfpv4 -march=armv8-a+crc -funsafe-math-optimizations
 
 KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
- 		   -fno-strict-aliasing -fno-common \
- 		   -Werror-implicit-function-declaration \
- 		   -Wno-format-security \
+		   -fno-strict-aliasing -fno-common \
+		   -Werror-implicit-function-declaration \
+		   -Wno-format-security \
 		   -fno-delete-null-pointer-checks \
-		   -Wno-unused-variable -Wno-bool-compare -Wno-discarded-array-qualifiers -Wno-logical-not-parentheses \
+		   -Wno-unused-variable -Wno-bool-compare -Wno-discarded-array-qualifiers -Wno-logical-not-parentheses -Wno-tautological-compare \
 		   -fmodulo-sched -fmodulo-sched-allow-regmoves \
 		   -fivopts -funswitch-loops -fpredictive-commoning -fgcse-after-reload \
 		   -pipe -fno-pic -O3 \
@@ -422,15 +421,15 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 #           -fno-ipa-icf
 #		    -fgnu89-inline
 
-KBUILD_AFLAGS_KERNEL  :=
-KBUILD_CFLAGS_KERNEL  :=
-KBUILD_AFLAGS         := -D__ASSEMBLY__
+KBUILD_AFLAGS_KERNEL :=
+KBUILD_CFLAGS_KERNEL :=
+KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_AFLAGS_MODULE  := -DMODULE
 KBUILD_CFLAGS_MODULE  := -DMODULE
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
 
 # Read KERNELRELEASE from include/config/kernel.release (if it exists)
-KERNELRELEASE = $(shell cat include/config/kernel.release 2> /dev/null)
+KERNELRELEASE = $(VERSION)$(if $(PATCHLEVEL),.$(PATCHLEVEL)$(if $(SUBLEVEL),.$(SUBLEVEL)))$(EXTRAVERSION)$(CONFIG_LOCALVERSION)
 KERNELVERSION = $(VERSION)$(if $(PATCHLEVEL),.$(PATCHLEVEL)$(if $(SUBLEVEL),.$(SUBLEVEL)))$(EXTRAVERSION)
 
 export VERSION PATCHLEVEL SUBLEVEL KERNELRELEASE KERNELVERSION
@@ -618,17 +617,19 @@ endif # $(dot-config)
 # Defaults to vmlinux, but the arch makefile usually adds further targets
 all: vmlinux
 
+KBUILD_CFLAGS	+= $(call cc-disable-warning,maybe-uninitialized,)
+
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS	+= -Os $(call cc-disable-warning,maybe-uninitialized,)
+KBUILD_CFLAGS	+= -Os
 endif
 ifdef CONFIG_CC_OPTIMIZE_DEFAULT
-KBUILD_CFLAGS	+= -O2 $(call cc-disable-warning,maybe-uninitialized,)
+KBUILD_CFLAGS	+= -O2
 endif
 ifdef CONFIG_CC_OPTIMIZE_MORE
-KBUILD_CFLAGS	+= -O3 $(call cc-disable-warning,maybe-uninitialized,)
+KBUILD_CFLAGS	+= -O3
 endif
 ifdef CONFIG_CC_OPTIMIZE_FAST
-KBUILD_CFLAGS	+= -Ofast $(call cc-disable-warning,maybe-uninitialized,)
+KBUILD_CFLAGS	+= -Ofast
 endif
 ifdef CONFIG_CC_GRAPHITE_OPTIMIZATION
 KBUILD_CFLAGS	+= $(GRAPHITE)
@@ -638,6 +639,9 @@ endif
 KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
 
 include $(srctree)/arch/$(SRCARCH)/Makefile
+
+# Tell gcc to never replace conditional load with a non-conditional one
+KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
 
 ifdef CONFIG_READABLE_ASM
 # Disable optimizations that make assembler listings hard to read.

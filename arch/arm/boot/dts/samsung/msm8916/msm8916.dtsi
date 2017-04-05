@@ -25,7 +25,7 @@
 	interrupt-parent = <&intc>;
 
 	chosen {
-		bootargs = "sched_enable_hmp=1";
+		bootargs = "boot_cpus=0,1,2,3 sched_enable_hmp=1";
 	};
 
 	aliases {
@@ -375,7 +375,10 @@
 			<  800000000 4>,
 			<  998400000 5>,
 			< 1094400000 6>,
-			< 1190400000 7>;
+			< 1190400000 7>,
+			< 1248000000 8>,
+			< 1363200000 9>,
+			< 1401600000 10>;
 	};
 
 	cpubw: qcom,cpubw@0 {
@@ -387,8 +390,11 @@
 		qcom,bw-tbl =
 			<  762 /* 100 MHz */>,
 			< 1525 /* 200 MHz */>,
+			< 2286 /* 300 MHz */>,
 			< 3051 /* 400 MHz */>,
-			< 4066 /* 533 MHz */>;
+			< 3810 /* 500 MHz */>,
+			< 4066 /* 533 MHz */>,
+			< 4191 /* 550 MHz */>;
 		qcom,ab-percent = < 30 >;
 	};
 
@@ -404,9 +410,12 @@
 			cpu-to-dev-map =
 				 <  400000  762>,
 				 <  800000  1525>,
-				 <  998400  3051>,
+				 <  998400  2286>,
 				 < 1094400  3051>,
-				 < 1190400  4066>;
+				 < 1190400  3810>,
+				 < 1248000  3810>,
+				 < 1363200  4066>,
+				 < 1401600  4191>;
 		};
 	};
 
@@ -426,7 +435,10 @@
 			 <  800000 >,
 			 <  998400 >,
 			 < 1094400 >,
-			 < 1190400 >;
+			 < 1190400 >,
+			 < 1248000 >,
+			 < 1363200 >,
+			 < 1401600 >;
 	};
 
 	qcom,sps {
@@ -817,8 +829,8 @@
 		reg = <0xb017000 0x1000>;
 		reg-names = "wdt-base";
 		interrupts = <0 3 0>, <0 4 0>;
-		qcom,bark-time = <20000>;
-		qcom,pet-time = <10000>;
+		qcom,bark-time = <21000>;
+		qcom,pet-time = <20000>;
 		qcom,ipi-ping;
 	};
 
@@ -1496,7 +1508,7 @@
 		      <0x7884000 0x23000>;
 		interrupt-names = "qup_irq", "bam_irq";
 		interrupts = <0 95 0>, <0 238 0>;
-		qcom,clk-freq-out = <100000>;
+		qcom,clk-freq-out = <400000>;
 		qcom,clk-freq-in  = <19200000>;
 		clock-names = "iface_clk", "core_clk";
 		clocks = <&clock_gcc clk_gcc_blsp1_ahb_clk>,
@@ -1697,7 +1709,13 @@
 		};
 	};
 
-	qcom,memshare {
+  	qcom,msm-thermal-simple {
+  		compatible = "qcom,msm-thermal-simple";
+  		qcom,thermal-vadc = <&pm8916_vadc>;
+  		qcom,adc-channel = <178>;
+  	};
+  
+  	qcom,memshare {
 		compatible = "qcom,memshare";
 
 		qcom,client_1 {
